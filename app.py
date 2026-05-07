@@ -16,10 +16,34 @@ def cr3bp_derivatives(t, state):
     ay = Omega_y - 2*vx
     return [vx, vy, ax, ay]
 
-def simulate_and_poincare(y0, t_max=500, n_points=5000):
+@st.cache_data(show_spinner=False)
+def calculate_poincare_grid(base_E, base_x0, base_vx0, dE, dx0, t_max):
+    scan_steps = 3
+    E_list = [base_E + (i - 1) * dE for i in range(scan_steps)]
+    x0_list = [base_x0 + (j - 1) * dx0 for j in range(scan_steps)]
+
+    results = []
+    for i, E in enumerate(E_list):
+        row_points = []
+        for j, x0 in enumerate(x0_list):
+            Omega = (x0**2)/2 + (1-MU)/abs(x0 + MU) + MU/abs(x0 - 1 + MU)
+            vy0_sq = 2*(E + Omega)
+            vy0 = np.sqrt(vy0_sq) if vy0_sq > 0 else 0
+            y0 = [x0, 0.0, base_vx0, vy0]
+            points = simulate_and_poincare_fast(y0, t_max)
+            row_points.append(points)
+        results.append(row_points)
+    return E_list, x0_list, results
+
+def simulate_and_poincare_fast(y0, t_max=500):
+    # optimiert: weniger Punkte, schnelleres Verfahren
     t_span = [0, t_max]
+    n_points = 2000
     t_eval = np.linspace(0, t_max, n_points)
-    sol = solve_ivp(cr3bp_derivatives, t_span, y0, method='DOP853', t_eval=t_eval, rtol=1e-9, atol=1e-11)
+    sol = solve_ivp(
+        cr3bp_derivatives, t_span, y0,
+        method='DOP853', t_eval=t_eval, rtol=1e-8, atol=1e-10
+    )
     y = sol.y
     z = y[1]
     sign_changes = np.diff(np.sign(z))
@@ -45,74 +69,56 @@ with col2:
 with col3:
     base_vx0 = st.slider("Base vx₀", -0.3, 0.3, 0.05, 0.001, key="base_vx0")
 
-scan_E = st.slider("Δ Energie Scan", 0.0, 0.5, 0.1, 0.01, key="scan_E")
-scan_x0 = st.slider("Δ x₀ Scan", 0.0, 0.2, 0.05, 0.01, key="scan_x0")
+dE = st.slider("Δ Energie Scan", 0.0, 0.5, 0.1, 0.01, key="dE")
+dx0 = st.slider("Δ x₀ Scan", 0.0, 0.2, 0.05, 0.01, key="dx0")
 
-# Scan steps: 3 × 3 = 9
-scan_steps = 3
-E_list = [base_E + (i - 1) * scan_E for i in range(scan_steps)]
-x0_list = [base_x0 + (j - 1) * scan_x0 for j in range(scan_steps)]
+t_max = st.slider("Integrationsdauer t_max", 100, 2000, 800, step=100)
 
-# --- Progress bar ---
-progress_text = st.empty()
-progress_bar = st.progress(0)
-total_steps = scan_steps * scan_steps
-steps_done = 0
+# --- Button for calculation ---
+if st.button("Berechnen"):
+    E_list, x0_list, results = calculate_poincare_grid(base_E, base_x0, base_vx0, dE, dx0, t_max)
 
-# Compute all 9 plots
-results = []
-for i, E in enumerate(E_list):
-    row_points = []
-    for j, x0 in enumerate(x0_list):
-        # vy0 from energy
-        Omega = (x0**2)/2 + (1-MU)/abs(x0 + MU) + MU/abs(x0 - 1 + MU)
-        vy0_sq = 2*(E + Omega)
-        if vy0_sq < 0:
-            vy0 = 0  # fallback
-        else:
-            vy0 = np.sqrt(vy0_sq)
-        y0 = [x0, 0.0, base_vx0, vy0]
-        t_max = 800
-        points = simulate_and_poincare(y0, t_max, n_points=3000)
-        row_points.append(points)
-        steps_done += 1
-        progress_bar.progress(steps_done / total_steps)
-    results.append(row_points)
+    # --- Grid View: 3 × 3 plots ---
+    st.subheader("Poincaré-Schnitte: 3 × 3 Grid")
+    cols = st.columns(3)
+    for i, E in enumerate(E_list):
+        for j, x0 in enumerate(x0_list):
+            with cols[j]:
+                st.markdown(f"**E = {E:.2f}, x₀ = {x0:.2f}**")
+                fig, ax = plt.subplots(figsize=(3, 3))
+                points = results[i][j]
+                if len(points) > 0:
+                    ax.scatter(points[:,0], points[:,1], s=0.8, c='navy', alpha=0.7)
+                ax.set_xlabel("x"); ax.set_ylabel("vₓ"); ax.set_title(f"E={E:.2f}, x₀={x0:.2f}", fontsize=8)
+                ax.grid(True, which='both', alpha=0.3); plt.tight_layout()
+                st.pyplot(fig)
 
-progress_bar.empty()
-
-# --- Grid View: 3 × 3 plots ---
-st.subheader("Poincaré-Schnitte: 3 × 3 Grid")
-cols = st.columns(3)
-for i, E in enumerate(E_list):
-    for j, x0 in enumerate(x0_list):
-        with cols[j]:
-            st.markdown(f"**E = {E:.2f}, x₀ = {x0:.2f}**")
-            fig, ax = plt.subplots(figsize=(3, 3))
-            points = results[i][j]
-            if len(points) > 0:
-                ax.scatter(points[:,0], points[:,1], s=0.8, c='navy', alpha=0.7)
-            ax.set_xlabel("x"); ax.set_ylabel("vₓ"); ax.set_title(f"E={E:.2f}, x₀={x0:.2f}", fontsize=8)
-            ax.grid(True, which='both', alpha=0.3); plt.tight_layout()
-            st.pyplot(fig)
+    st.success("Fertig! 9 Plots berechnet.")
+else:
+    st.info("Klicke auf **Berechnen**, um die 3×3-Grid-Plot zu generieren.")
 
 # --- Export button ---
 st.markdown("---")
 st.markdown("### Export aller 9 Plots als PDF")
 if st.button("PDF exportieren"):
     from matplotlib.backends.backend_pdf import PdfPages
-    pdf = PdfPages("poincare_grid.pdf")
-    for i, E in enumerate(E_list):
-        for j, x0 in enumerate(x0_list):
-            fig, ax = plt.subplots(figsize=(5, 4))
-            points = results[i][j]
-            if len(points) > 0:
-                ax.scatter(points[:,0], points[:,1], s=1, c='navy', alpha=0.6)
-            ax.set_xlabel("x"); ax.set_ylabel("vₓ")
-            ax.set_title(f"E={E:.2f}, x₀={x0:.2f}")
-            ax.grid(True); plt.tight_layout()
-            pdf.savefig(fig)
-            plt.close(fig)
-    pdf.close()
-    with open("poincare_grid.pdf", "rb") as f:
-        st.download_button("💾 PDF aller 9 Plots", f.read(), "poincare_grid.pdf", "application/pdf")
+    try:
+        E_list, x0_list, results = calculate_poincare_grid(base_E, base_x0, base_vx0, dE, dx0, t_max)
+    except:
+        st.error("Noch keine Daten – bitte erst 'Berechnen' drücken.")
+    else:
+        pdf = PdfPages("poincare_grid.pdf")
+        for i, E in enumerate(E_list):
+            for j, x0 in enumerate(x0_list):
+                fig, ax = plt.subplots(figsize=(5, 4))
+                points = results[i][j]
+                if len(points) > 0:
+                    ax.scatter(points[:,0], points[:,1], s=1, c='navy', alpha=0.6)
+                ax.set_xlabel("x"); ax.set_ylabel("vₓ")
+                ax.set_title(f"E={E:.2f}, x₀={x0:.2f}")
+                ax.grid(True); plt.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
+        pdf.close()
+        with open("poincare_grid.pdf", "rb") as f:
+            st.download_button("💾 PDF aller 9 Plots", f.read(), "poincare_grid.pdf", "application/pdf")
